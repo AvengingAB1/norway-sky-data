@@ -1,0 +1,1 @@
+# norway-sky-data
