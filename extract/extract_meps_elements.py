@@ -26,8 +26,8 @@ from scipy.spatial import cKDTree
 
 import extract_meps as M
 
-BOX = dict(south=66.8, north=71.1, west=10.5, east=24.45)   # = MEPS cloud grid box
-IMG_W, IMG_H = 560, 480
+BOX = dict(south=65.9, north=71.1, west=8.1, east=24.45)    # = MEPS cloud grid box
+IMG_W, IMG_H = 656, 570                                        # same pixel density as before
 ALPHA = 190
 
 # Wind speed bands (m/s, lower edges) and colours: calm blue -> green -> yellow -> red -> purple.
@@ -95,7 +95,7 @@ def legend_b64(edges, rgb, fmt):
     font = ImageFont.load_default()
     for i, col in enumerate(rgb):
         d.rectangle([i * cell, 0, (i + 1) * cell - 1, h - 1], fill=col + (255,))
-        d.text((i * cell + 2, h + 1), fmt(edges[i]), fill=(230, 230, 230, 255), font=font)
+        d.text((i * cell + 2, h + 1), fmt(edges[i]), fill=(25, 25, 25, 255), font=font)   # dark: the app shows legends on a light strip
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     return base64.b64encode(buf.getvalue()).decode('ascii')
