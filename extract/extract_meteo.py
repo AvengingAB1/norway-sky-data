@@ -4,16 +4,16 @@ extract_meteo.py — Open-Meteo 14-day cloud + visibility (fog) forecast grid fo
 Sunsetglow app, NORTH NORWAY region (copy of the Iceland extractor with a configurable
 box and separate lat/lon steps so cells stay ~square at 69 N).
 
-Runs on GitHub Actions (server-side): fetches the region box at 0.20°
-(~22 km) resolution — 36×64 = 2304 points — with 12-second pauses between 150-point
-chunks so the per-minute rate limit (600 locations/min) is never hit. Outputs a single
+Runs on GitHub Actions (server-side): fetches the region box at 0.25° lat x 0.50° lon
+(~1551 points) in 75-point chunks with 20-second pauses so the per-minute rate limit
+(600 locations/min) is never hit. Outputs a single
 JSON that the app loads from GitHub Pages (zero Open-Meteo calls from the user's device).
 
 The output mirrors the structure that clouds.js `makeSampler()` expects: an array of
 point objects with {lat, lon, time:[], low:[], mid:[], high:[], visibility:[]}.
 
-Usage:  python extract_meteo.py [--out FILE] [--step DEGREES] [--days N]
-        Defaults: --out meteo_latest.json  --step 0.20  --days 14
+Usage:  python extract_meteo.py [--out FILE] [--step DEGREES] [--step-lon DEGREES] [--days N]
+        Defaults: --out meteo_latest.json  --step 0.25  --step-lon 0.50  --days 14
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ API = "https://api.open-meteo.com/v1/forecast"
 HOURLY = "cloud_cover_low,cloud_cover_mid,cloud_cover_high,visibility"
 CHUNK = 75           # points per request (smaller chunks = less server compute = fewer timeouts with 14-day range)
 DELAY = 20           # seconds between chunks (stay well under 600 locs/min)
-BOX = dict(lat0=65.5, lat1=72.5, lon0=7.0, lon1=28.0)   # MEPS box + up-sun margin
+BOX = dict(lat0=64.6, lat1=72.5, lon0=4.8, lon1=28.0)   # MEPS box + up-sun margin
 
 
 def grid_coords(step: float, step_lon: float):
@@ -51,8 +51,15 @@ def grid_coords(step: float, step_lon: float):
     return lats, lons
 
 
-def fetch_chunk(lats: list, lons: list, start: str, end: str, retries: int = 3) -> list:
-    """Fetch one chunk of ≤150 locations from Open-Meteo. Returns list of point dicts."""
+SESSION = requests.Session()
+# On GitHub runners a request occasionally hangs with no reply while an immediate retry
+# answers in ~1 s (a healthy 75-point 14-day chunk takes ~1.5 s), so give up quickly and
+# retry rather than sitting out a long read timeout. (connect, read) seconds.
+TIMEOUT = (15, 45)
+
+
+def fetch_chunk(lats: list, lons: list, start: str, end: str, retries: int = 6) -> list:
+    """Fetch one chunk of locations from Open-Meteo. Returns list of point dicts."""
     params = {
         "latitude": ",".join(f"{x:.4f}" for x in lats),
         "longitude": ",".join(f"{x:.4f}" for x in lons),
@@ -63,11 +70,11 @@ def fetch_chunk(lats: list, lons: list, start: str, end: str, retries: int = 3) 
     }
     for attempt in range(retries + 1):
         try:
-            resp = requests.get(API, params=params, timeout=120)
+            resp = SESSION.get(API, params=params, timeout=TIMEOUT)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             if attempt < retries:
-                wait = 30
-                print(f" timeout/connection error, retry in {wait}s...", end="", flush=True)
+                wait = 5 if attempt < 2 else 30
+                print(f" {type(e).__name__}, retry in {wait}s...", end="", flush=True)
                 time.sleep(wait)
                 continue
             raise RuntimeError(f"Open-Meteo request failed after {retries} retries: {e}")
@@ -107,7 +114,7 @@ def fetch_chunk(lats: list, lons: list, start: str, end: str, retries: int = 3) 
 def main():
     ap = argparse.ArgumentParser(description="Fetch Open-Meteo cloud+fog grid for North Norway")
     ap.add_argument("--out", default="meteo_latest.json", help="Output file path")
-    ap.add_argument("--step", type=float, default=0.20, help="Latitude step in degrees (default 0.20)")
+    ap.add_argument("--step", type=float, default=0.25, help="Latitude step in degrees (default 0.25: 33x47 = 1551 points, same call budget as before the box grew)")
     ap.add_argument("--step-lon", type=float, default=0.50, help="Longitude step (default 0.50 = ~20 km at 69N)")
     ap.add_argument("--box", default=None, help="lat0,lat1,lon0,lon1 override")
     ap.add_argument("--days", type=int, default=14, help="Forecast days (default 14)")
@@ -138,8 +145,8 @@ def main():
 
     # --- AOD (Aerosol Optical Depth) fetch from Air Quality API ---
     AOD_API = "https://air-quality-api.open-meteo.com/v1/air-quality"
-    AOD_LATS = [66.0 + i * 1.5 for i in range(5)]   # 66.0 .. 72.0
-    AOD_LONS = [8.0 + j * 4.0 for j in range(6)]    # 8 .. 28
+    AOD_LATS = [65.0 + i * 1.5 for i in range(5)]   # 65.0 .. 71.0
+    AOD_LONS = [6.0 + j * 4.0 for j in range(6)]    # 6 .. 26
     aod_grid_lats = [la for la in AOD_LATS for _ in AOD_LONS]
     aod_grid_lons = [lo for _ in AOD_LATS for lo in AOD_LONS]
 
@@ -206,7 +213,7 @@ def main():
     tmp_path = out_path.with_suffix(".tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(output, f, separators=(",", ":"))
-    tmp_path.rename(out_path)
+    tmp_path.replace(out_path)   # replace = overwrite on every OS (rename fails on Windows)
 
     size_mb = out_path.stat().st_size / (1024 * 1024)
     print(f"\nDone: {out_path} ({size_mb:.1f} MB, {len(all_points)} points, {len(times)} hours)")
