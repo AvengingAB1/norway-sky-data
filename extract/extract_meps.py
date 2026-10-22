@@ -38,9 +38,9 @@ DIV = 20                 # 5 % steps
 NODATA = 255
 UA = {'User-Agent': 'sunsetglow-data/1.0 github.com/avengingab1'}
 
-# North Norway: Bodo (S) .. Hasvik/Sorvaer (N), Reine-40mi (W) .. Alta (E), plus
-# ~0.4 deg sea/land margin (same margin philosophy as the Iceland HARMONIE box).
-DEFAULT_BOX = (66.8, 71.1, 10.5, 24.5)
+# North Norway: Bodo (S) .. Hasvik/Sorvaer (N), Reine-40mi (W) .. Alta (E), plus a sea/land
+# margin, extended (Oct 2026) a further ~100 km south (Helgeland) and ~100 km west.
+DEFAULT_BOX = (65.9, 71.1, 8.1, 24.45)
 
 
 def _retry(fn, what, tries=4, wait=15):
