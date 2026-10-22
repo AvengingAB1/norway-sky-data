@@ -1,0 +1,62 @@
+name: Open-Meteo cloud + fog grid (14-day, North Norway)
+
+# Slow feed (~9 min of paced requests): Open-Meteo best_match low/mid/high cloud + visibility
+# (fog) over a wide box (MEPS area + up-sun margin), 0.20 deg lat x 0.50 deg lon (~22 x 20 km),
+# 1548 points per run, every 6 h. Supplies the app's Auto-mode gap fill beyond MEPS's +66 h
+# and the Fog layer.
+
+on:
+  schedule:
+    - cron: '40 1,7,13,19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  SITE: https://avengingab1.github.io/norway-sky-data
+
+jobs:
+  extract-meteo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Extract Open-Meteo cloud + fog grid
+        run: |
+          mkdir -p _site
+          (cd extract && python extract_meteo.py --out ../_site/meteo_latest.json)
+          touch _site/.nojekyll
+          ls -lh _site
+
+      - name: Preserve MEPS + elements + stations from current deploy
+        run: |
+          curl -sf "$SITE/meps_latest.json" -o _site/meps_latest.json || true
+          curl -sf "$SITE/elements_latest.json" -o _site/elements_latest.json || true
+          curl -sf "$SITE/stations.json" -o _site/stations.json || true
+          ls -lh _site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
