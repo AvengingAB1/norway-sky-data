@@ -4,8 +4,8 @@ extract_meteo.py — Open-Meteo 14-day cloud + visibility (fog) forecast grid fo
 Sunsetglow app, NORTH NORWAY region (copy of the Iceland extractor with a configurable
 box and separate lat/lon steps so cells stay ~square at 69 N).
 
-Runs on GitHub Actions (server-side): fetches the region box at 0.25° lat x 0.50° lon
-(~1551 points) in 75-point chunks with 20-second pauses so the per-minute rate limit
+Runs on GitHub Actions (server-side): fetches the region box at 0.20° lat x 0.40° lon
+(2419 points, twice a day) in 75-point chunks with 20-second pauses so the per-minute rate limit
 (600 locations/min) is never hit. Outputs a single
 JSON that the app loads from GitHub Pages (zero Open-Meteo calls from the user's device).
 
@@ -13,7 +13,7 @@ The output mirrors the structure that clouds.js `makeSampler()` expects: an arra
 point objects with {lat, lon, time:[], low:[], mid:[], high:[], visibility:[]}.
 
 Usage:  python extract_meteo.py [--out FILE] [--step DEGREES] [--step-lon DEGREES] [--days N]
-        Defaults: --out meteo_latest.json  --step 0.25  --step-lon 0.50  --days 14
+        Defaults: --out meteo_latest.json  --step 0.20  --step-lon 0.40  --days 14
 """
 from __future__ import annotations
 
@@ -123,8 +123,8 @@ def fetch_chunk(lats: list, lons: list, start: str, end: str, retries: int = 6) 
 def main():
     ap = argparse.ArgumentParser(description="Fetch Open-Meteo cloud+fog grid for North Norway")
     ap.add_argument("--out", default="meteo_latest.json", help="Output file path")
-    ap.add_argument("--step", type=float, default=0.25, help="Latitude step in degrees (default 0.25: 33x47 = 1551 points, same call budget as before the box grew)")
-    ap.add_argument("--step-lon", type=float, default=0.50, help="Longitude step (default 0.50 = ~20 km at 69N)")
+    ap.add_argument("--step", type=float, default=0.20, help="Latitude step in degrees (default 0.20: 41x59 = 2419 points; 2 runs/day = 4838 calls)")
+    ap.add_argument("--step-lon", type=float, default=0.40, help="Longitude step (default 0.40 = ~16 km at 69N)")
     ap.add_argument("--box", default=None, help="lat0,lat1,lon0,lon1 override")
     ap.add_argument("--days", type=int, default=14, help="Forecast days (default 14)")
     args = ap.parse_args()
