@@ -66,6 +66,9 @@ jobs:
           rc=$?
           set -e
           if [ $rc -eq 3 ]; then echo "skip=true" >> $GITHUB_OUTPUT; exit 0; fi
+          # 4 = thredds.met.no not answering at all: skip this cycle (published data stays), the
+          # Worker re-dispatches in 30 min. A warning shows in the run summary instead of a failure email.
+          if [ $rc -eq 4 ]; then echo "::warning::thredds.met.no unreachable - kept the published MEPS run"; echo "skip=true" >> $GITHUB_OUTPUT; exit 0; fi
           if [ $rc -ne 0 ]; then exit $rc; fi
           echo "skip=false" >> $GITHUB_OUTPUT
           ls -lh _site
