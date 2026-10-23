@@ -11,14 +11,19 @@ the app's W (weather-symbol) layer works unchanged:
 MET symbol codes (clearsky_day, lightrainshowers_night, ...) are mapped onto the vedur
 weather codes 1..23 that the app's own SVG icons (wicons.js) are keyed on.
 
-Usage: python extract_stations_metno.py [--out stations.json]
+Three files (one shared time axis): stations.json = named places + towns (old apps read only this),
+stations_peaks.json = peaks at summit altitude with fog G (summit in cloud), stations_grid.json = land grid.
+
+Usage: python extract_stations_metno.py [--out stations.json] [--tiers towns,peaks,grid] [--limit N]
 """
 from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -85,10 +90,18 @@ def w_code(sym):
     return 0
 
 
-def fetch(lat, lon):
+API_COMPLETE = 'https://api.met.no/weatherapi/locationforecast/2.0/complete'
+WORKERS, PAUSE = 8, 0.4             # each worker waits 0.4 s + request time: < 20 req/s (MET's guidance) even on a fast link
+TIER_FILES = {'towns': None, 'peaks': 'stations_peaks.json', 'grid': 'stations_grid.json'}
+
+
+def fetch(lat, lon, altitude=None, complete=False):
+    params = {'lat': '%.4f' % lat, 'lon': '%.4f' % lon}
+    if altitude is not None:
+        params['altitude'] = int(altitude)
     for k in range(4):
         try:
-            r = requests.get(API, params={'lat': '%.4f' % lat, 'lon': '%.4f' % lon}, headers=UA, timeout=40)
+            r = requests.get(API_COMPLETE if complete else API, params=params, headers=UA, timeout=40)
             if r.status_code == 200:
                 return r.json()
             if r.status_code in (429, 500, 502, 503, 504):
@@ -99,21 +112,56 @@ def fetch(lat, lon):
     return None
 
 
+def load_points(tiers):
+    """{tier: {sid: (name, lat, lon, area, alt)}}. 'towns' = the 32 named places + the town fill
+    tier; 'peaks' (summit altitude) and 'grid' from station_points.json
+    (tools/build_nn_station_points.py). Every point is a MET model point forecast."""
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'station_points.json')
+    extra = json.load(open(p, encoding='utf-8')) if os.path.exists(p) else {}
+    if isinstance(extra, list):                     # older single-list format = towns
+        extra = {'towns': extra}
+    out = {'towns': {sid: (n, la, lo, ar, None) for sid, (n, la, lo, ar) in PLACES.items()}}
+    for sid, n, la, lo in extra.get('towns', []):
+        out['towns'].setdefault(sid, (n, la, lo, '', None))
+    if 'peaks' in tiers:
+        out['peaks'] = {sid: (n, la, lo, 'peak', alt) for sid, n, la, lo, alt in extra.get('peaks', [])}
+    if 'grid' in tiers:
+        out['grid'] = {sid: (n, la, lo, 'grid', None) for sid, n, la, lo in extra.get('grid', [])}
+    return out
+
+
 def main(argv):
     ap = argparse.ArgumentParser()
-    ap.add_argument('--out', default='stations.json')
+    ap.add_argument('--out', default='stations.json', help='towns file; peaks/grid files are written next to it')
+    ap.add_argument('--tiers', default='towns,peaks,grid')
+    ap.add_argument('--limit', type=int, default=0, help='max points per tier (testing)')
     a = ap.parse_args(argv)
-    raw, issued = {}, None
-    for sid, (name, lat, lon, area) in PLACES.items():
-        j = fetch(lat, lon)
-        if j:
-            raw[sid] = j
-            issued = issued or j['properties']['meta'].get('updated_at')
-        print(sid, 'ok' if j else 'FAILED', flush=True)
-        time.sleep(0.4)                              # polite: well under MET's rate guidance
-    if not raw:
-        raise SystemExit('no station forecasts fetched')
-    # Shared time axis = union of all stations' times (hourly first ~60 h, then 6-hourly).
+    tiers = [x for x in a.tiers.split(',') if x in TIER_FILES]
+    points = load_points(tiers)
+    if a.limit:
+        points = {k: dict(list(v.items())[:a.limit]) for k, v in points.items()}
+    jobs = [(tier, sid, v) for tier in tiers for sid, v in points.get(tier, {}).items()]
+
+    def work(job):
+        tier, sid, (name, lat, lon, area, alt) = job
+        time.sleep(PAUSE)
+        # Peaks: the FULL forecast at the summit altitude, for fog_area_fraction (= summit in cloud).
+        return job, fetch(lat, lon, altitude=alt, complete=(tier == 'peaks'))
+
+    t0 = time.time()
+    raw, issued, failed = {}, None, []
+    with ThreadPoolExecutor(WORKERS) as ex:
+        for (tier, sid, _), j in ex.map(work, jobs):
+            if j:
+                raw[(tier, sid)] = j
+                issued = issued or j['properties']['meta'].get('updated_at')
+            else:
+                failed.append(sid)
+    print('fetched %d/%d points in %.0fs%s' % (len(raw), len(jobs), time.time() - t0,
+                                             (' (failed: %s)' % ', '.join(failed[:10])) if failed else ''), flush=True)
+    if not any(k[0] == 'towns' for k in raw):
+        raise SystemExit('no town forecasts fetched')
+    # ONE time axis for every tier (hourly first ~60 h, then 6-hourly) so the app can merge files.
     tset = sorted({e['time'] for j in raw.values() for e in j['properties']['timeseries']})
     times = [t.replace(':00:00Z', ':00Z') for t in tset]
     tpos = {t: i for i, t in enumerate(tset)}
@@ -125,36 +173,48 @@ def main(argv):
             interval.append(int(round(d)))
         else:
             interval.append(interval[-1] if interval else 1)
-    stations = {}
     n = len(tset)
-    for sid, j in raw.items():
-        name, lat, lon, area = PLACES[sid]
-        st = {'name': name, 'lat': lat, 'lon': lon, 'area': area,
-              'W': [None] * n, 'T': [None] * n, 'N': [None] * n, 'F': [None] * n, 'D2': [None] * n, 'R': [None] * n}
-        for e in j['properties']['timeseries']:
-            i = tpos[e['time']]
-            det = e['data']['instant']['details']
-            nxt = e['data'].get('next_1_hours') or e['data'].get('next_6_hours') or {}
-            st['W'][i] = w_code((nxt.get('summary') or {}).get('symbol_code'))
-            st['T'][i] = round(det['air_temperature']) if 'air_temperature' in det else None
-            st['N'][i] = round(det['cloud_area_fraction'] / 100, 2) if 'cloud_area_fraction' in det else None
-            st['F'][i] = round(det['wind_speed']) if 'wind_speed' in det else None
-            st['D2'][i] = round(det['wind_from_direction']) if 'wind_from_direction' in det else None
-            st['R'][i] = (nxt.get('details') or {}).get('precipitation_amount')
-        stations[sid] = st
-    out = {
-        'source': 'MET Norway Locationforecast 2.0 (api.met.no), NLOD 2.0 / CC BY 4.0',
-        'region': 'nnorway',
-        'fetched': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'),
-        'issued': (issued or '').replace(':00:00Z', ':00Z'),
-        'times': times, 'interval': interval,
-        'labels': {str(k): v for k, v in LABELS.items()},
-        'overview': [s for s in OVERVIEW if s in stations],
-        'stations': stations,
-    }
-    with open(a.out, 'w', encoding='utf-8') as f:
-        json.dump(out, f, ensure_ascii=False, separators=(',', ':'))
-    print('wrote %s: %d stations x %d times' % (a.out, len(stations), n))
+    fetched = dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%MZ')
+    for tier in tiers:
+        stations = {}
+        for (tr, sid), j in raw.items():
+            if tr != tier:
+                continue
+            name, lat, lon, area, alt = points[tier][sid]
+            st = {'name': name, 'lat': lat, 'lon': lon, 'area': area,
+                  'W': [None] * n, 'T': [None] * n, 'N': [None] * n, 'F': [None] * n, 'D2': [None] * n, 'R': [None] * n}
+            if tier == 'peaks':
+                st['alt'] = alt
+                st['G'] = [None] * n                 # fog fraction AT the summit: >= 0.5 = in cloud
+            for e in j['properties']['timeseries']:
+                i = tpos[e['time']]
+                det = e['data']['instant']['details']
+                nxt = e['data'].get('next_1_hours') or e['data'].get('next_6_hours') or {}
+                st['W'][i] = w_code((nxt.get('summary') or {}).get('symbol_code'))
+                st['T'][i] = round(det['air_temperature']) if 'air_temperature' in det else None
+                st['N'][i] = round(det['cloud_area_fraction'] / 100, 2) if 'cloud_area_fraction' in det else None
+                st['F'][i] = round(det['wind_speed']) if 'wind_speed' in det else None
+                st['D2'][i] = round(det['wind_from_direction']) if 'wind_from_direction' in det else None
+                st['R'][i] = (nxt.get('details') or {}).get('precipitation_amount')
+                if tier == 'peaks' and 'fog_area_fraction' in det:
+                    st['G'][i] = round(det['fog_area_fraction'] / 100, 2)
+            stations[sid] = st
+        out = {
+            'source': 'MET Norway Locationforecast 2.0 (api.met.no), NLOD 2.0 / CC BY 4.0',
+            'region': 'nnorway', 'tier': tier,
+            'fetched': fetched, 'issued': (issued or '').replace(':00:00Z', ':00Z'),
+            'times': times, 'interval': interval,
+            'labels': {str(k): v for k, v in LABELS.items()},
+            'overview': [s for s in OVERVIEW if s in stations] if tier == 'towns' else [],
+            'stations': stations,
+        }
+        path = a.out if TIER_FILES[tier] is None else os.path.join(os.path.dirname(os.path.abspath(a.out)), TIER_FILES[tier])
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(out, f, ensure_ascii=False, separators=(',', ':'))
+        os.replace(tmp, path)
+        print('wrote %s: %d %s points x %d times' % (path, len(stations), tier, n))
     return 0
 
 
