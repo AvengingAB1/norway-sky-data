@@ -60,9 +60,40 @@ def _retry(fn, what, tries=4, wait=15):
             time.sleep(wait)
 
 
+class SourceUnreachable(Exception):
+    """thredds.met.no did not answer at all (transient outage): skip this cycle, don't fail."""
+
+
 def list_runs():
-    txt = _retry(lambda: requests.get(CATALOG, timeout=60, headers=UA).text, 'catalog')
-    return sorted(set(re.findall(r'meps_det_2_5km_(\d{8}T\d{2})Z\.ncml', txt)))
+    """Existing MEPS runs, oldest -> newest. Probes each 3-hourly cycle's tiny OPeNDAP .dds
+    (~1 s) newest-first instead of reading the THREDDS catalog listing, which intermittently
+    takes > 60 s and used to fail whole runs (22-23 Oct 2026). The catalog is only a fallback."""
+    now = dt.datetime.now(dt.timezone.utc)
+    found, answered = [], False
+    for back in range(0, 7):                         # cycles in the last 18 h
+        c = now - dt.timedelta(hours=3 * back)
+        run = c.replace(hour=c.hour - c.hour % 3).strftime('%Y%m%dT%H')
+        for attempt in range(2):
+            try:
+                r = requests.get(DODS % run + '.dds', timeout=(10, 30), headers=UA)
+                answered = True
+                if r.status_code == 200:
+                    found.append(run)
+                break
+            except requests.RequestException as e:
+                print('  probe %s failed (%s)%s' % (run, str(e)[:80], ', retry' if attempt == 0 else ''))
+                time.sleep(5)
+        if len(found) >= 3:
+            break
+    if found:
+        return sorted(found)
+    try:
+        txt = _retry(lambda: requests.get(CATALOG, timeout=60, headers=UA).text, 'catalog', tries=2)
+        return sorted(set(re.findall(r'meps_det_2_5km_(\d{8}T\d{2})Z\.ncml', txt)))
+    except Exception as e:
+        if not answered:
+            raise SourceUnreachable(str(e)[:200])
+        raise
 
 
 def open_run(run):
@@ -181,7 +212,11 @@ def main(argv):
     ap.add_argument('--skip-if-run', help="exit 3 without writing if newest complete run == this id ('YYMMDD_HHMM')")
     a = ap.parse_args(argv)
     box = tuple(float(x) for x in a.box.split(','))
-    cands = [a.run] if a.run else list(reversed(list_runs()))[:3]
+    try:
+        cands = [a.run] if a.run else list(reversed(list_runs()))[:3]
+    except SourceUnreachable as e:
+        print('thredds.met.no unreachable (%s); keeping the published run' % e)
+        return 4
     res = None
     for run in cands:
         rid = dt.datetime.strptime(run, '%Y%m%dT%H').strftime('%y%m%d_%H%M')
