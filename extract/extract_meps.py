@@ -17,6 +17,7 @@ Usage:  python extract_meps.py [--run YYYYMMDDTHH] [--box lat0,lat1,lon0,lon1]
 """
 from __future__ import annotations
 import argparse
+import base64
 import datetime as dt
 import gzip
 import json
@@ -36,6 +37,11 @@ LAYERS = {'low': 'low_type_cloud_area_fraction',
           'high': 'high_type_cloud_area_fraction'}
 DIV = 20                 # 5 % steps
 NODATA = 255
+# Visibility (fog layer): metres in VIS_STEP steps up to the app's 5000 m slider maximum;
+# VIS_CLEAR = clearer than that (no fog at any threshold). One byte per cell.
+VIS_VAR = 'visibility_in_air'
+VIS_STEP = 50
+VIS_CLEAR = 101
 UA = {'User-Agent': 'sunsetglow-data/1.0 github.com/avengingab1'}
 
 # North Norway: Bodo (S) .. Hasvik/Sorvaer (N), Reine-40mi (W) .. Alta (E), plus a sea/land
@@ -121,6 +127,17 @@ def build(run, box, dlat, dlon):
         q[:, far] = NODATA
         out[key] = q.reshape(len(tsec), len(out_lats), len(out_lons))
         print('  %s %s read+resample %.1fs' % (key, a.shape, time.time() - t))
+    try:                                             # optional: never block the cloud feed
+        t = time.time()
+        a = _retry(lambda: ds.variables[VIS_VAR][:, 0, y0:y1, x0:x1], 'read ' + VIS_VAR)
+        a = np.ma.filled(np.ma.asarray(a, dtype='float32'), np.nan)
+        g = a[:, iy, ix]
+        q = np.where(np.isnan(g), NODATA, np.minimum(np.rint(g / VIS_STEP), VIS_CLEAR)).astype(np.uint8)
+        q[:, far] = NODATA
+        out['vis'] = q.reshape(len(tsec), len(out_lats), len(out_lons))
+        print('  vis %s read+resample %.1fs' % (a.shape, time.time() - t))
+    except Exception as e:
+        print('  WARNING: %s unavailable (%s); fog layer falls back to Open-Meteo' % (VIS_VAR, str(e)[:120]))
     ds.close()
 
     # Drop steps that are entirely nodata (run still filling at the tail).
@@ -130,7 +147,7 @@ def build(run, box, dlat, dlon):
         vt = dt.datetime.fromtimestamp(tsec[i], dt.timezone.utc)
         times.append(vt.strftime('%Y-%m-%dT%H:%MZ'))
         frames.append(int(round((vt - rt).total_seconds() / 3600)))
-    return {
+    res = {
         'source': 'metno_meps_2p5km', 'region': 'nnorway',
         'scale': 'fraction_div', 'div': DIV, 'nodata': NODATA,
         'run': rt.strftime('%y%m%d_%H%M'),
@@ -144,6 +161,14 @@ def build(run, box, dlat, dlon):
         'high': [out['high'][i].tolist() for i in keep],
         'credit': 'MET Norway (MEPS), NLOD 2.0 / CC BY 4.0',
     }
+    if 'vis' in out:
+        # One base64 string of nlat*nlon bytes per frame (row-major, row 0 = north): ~3x smaller
+        # than nested JSON arrays in the app's IndexedDB history and in memory.
+        res['vis'] = [base64.b64encode(np.ascontiguousarray(out['vis'][i]).tobytes()).decode('ascii') for i in keep]
+        res['vis_enc'] = 'u8-b64'
+        res['vis_step'] = VIS_STEP          # metres per stored unit
+        res['vis_clear'] = VIS_CLEAR        # stored value meaning "clearer than vis_clear-1 units"
+    return res
 
 
 def main(argv):
