@@ -99,9 +99,11 @@ jobs:
       - name: Preserve elements + stations + meteo from current deploy
         if: steps.clouds.outputs.skip != 'true'
         run: |
-          [ -f _site/elements_latest.json ] || curl -sf "$SITE/elements_latest.json" -o _site/elements_latest.json || echo "no existing elements"
-          [ -f _site/stations.json ] || curl -sf "$SITE/stations.json" -o _site/stations.json || echo "no existing stations"
-          curl -sf "$SITE/meteo_latest.json" -o _site/meteo_latest.json || echo "no existing meteo"
+          for f in meps_latest.json elements_latest.json stations.json meteo_latest.json ecmwf_latest.json ecmwf_elements_latest.json; do
+            if [ ! -f "_site/$f" ]; then
+              curl -sf "$SITE/$f" -o "_site/$f.tmp" && mv "_site/$f.tmp" "_site/$f" && echo "preserved $f" || { rm -f "_site/$f.tmp"; echo "no existing $f"; }
+            fi
+          done
           ls -lh _site
 
       - uses: actions/upload-pages-artifact@v3
