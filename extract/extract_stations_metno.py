@@ -120,9 +120,11 @@ def load_points(tiers):
     extra = json.load(open(p, encoding='utf-8')) if os.path.exists(p) else {}
     if isinstance(extra, list):                     # older single-list format = towns
         extra = {'towns': extra}
-    out = {'towns': {sid: (n, la, lo, ar, None) for sid, (n, la, lo, ar) in PLACES.items()}}
-    for sid, n, la, lo in extra.get('towns', []):
-        out['towns'].setdefault(sid, (n, la, lo, '', None))
+    out = {}
+    if 'towns' in tiers:
+        out['towns'] = {sid: (n, la, lo, ar, None) for sid, (n, la, lo, ar) in PLACES.items()}
+        for sid, n, la, lo in extra.get('towns', []):
+            out['towns'].setdefault(sid, (n, la, lo, '', None))
     if 'peaks' in tiers:
         out['peaks'] = {sid: (n, la, lo, 'peak', alt) for sid, n, la, lo, alt in extra.get('peaks', [])}
     if 'grid' in tiers:
@@ -135,6 +137,7 @@ def main(argv):
     ap.add_argument('--out', default='stations.json', help='towns file; peaks/grid files are written next to it')
     ap.add_argument('--tiers', default='towns,peaks,grid')
     ap.add_argument('--limit', type=int, default=0, help='max points per tier (testing)')
+    ap.add_argument('--region', default='nnorway', help="'iceland': peaks + grid only (its towns are vedur stations)")
     a = ap.parse_args(argv)
     tiers = [x for x in a.tiers.split(',') if x in TIER_FILES]
     points = load_points(tiers)
@@ -159,8 +162,8 @@ def main(argv):
                 failed.append(sid)
     print('fetched %d/%d points in %.0fs%s' % (len(raw), len(jobs), time.time() - t0,
                                              (' (failed: %s)' % ', '.join(failed[:10])) if failed else ''), flush=True)
-    if not any(k[0] == 'towns' for k in raw):
-        raise SystemExit('no town forecasts fetched')
+    if not raw or ('towns' in tiers and not any(k[0] == 'towns' for k in raw)):
+        raise SystemExit('no forecasts fetched')
     # ONE time axis for every tier (hourly first ~60 h, then 6-hourly) so the app can merge files.
     tset = sorted({e['time'] for j in raw.values() for e in j['properties']['timeseries']})
     times = [t.replace(':00:00Z', ':00Z') for t in tset]
@@ -201,7 +204,7 @@ def main(argv):
             stations[sid] = st
         out = {
             'source': 'MET Norway Locationforecast 2.0 (api.met.no), NLOD 2.0 / CC BY 4.0',
-            'region': 'nnorway', 'tier': tier,
+            'region': a.region, 'tier': tier,
             'fetched': fetched, 'issued': (issued or '').replace(':00:00Z', ':00Z'),
             'times': times, 'interval': interval,
             'labels': {str(k): v for k, v in LABELS.items()},
