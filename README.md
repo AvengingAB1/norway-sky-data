@@ -6,10 +6,10 @@ compact JSON and publish them to GitHub Pages:
 
 | File | Source | Cadence |
 |---|---|---|
-| `meps_latest.json` | MET Norway **MEPS 2.5 km** (HARMONIE-AROME) low/mid/high cloud, read numerically from thredds.met.no (OPeNDAP), resampled to 0.03° × 0.075° (~3.3 × 3.0 km), 5 % steps, +66 h, plus ~30 h of past hours carried forward | every MEPS run (3-hourly), hourly probe |
+| `meps_latest.json` | MET Norway **MEPS 2.5 km** (HARMONIE-AROME) low/mid/high cloud + visibility (fog layer, `vis`), read numerically from thredds.met.no (OPeNDAP), resampled to 0.03° × 0.075° (~3.3 × 3.0 km), 5 % steps, +66 h, plus ~30 h of past hours carried forward | every MEPS run (3-hourly), hourly probe |
 | `elements_latest.json` | MEPS 10 m wind + hourly precipitation, rendered as map overlays | with each MEPS run |
 | `stations.json` | MET Norway **Locationforecast 2.0** point forecasts for ~30 photo spots/towns, ~10 days | with each MEPS run |
-| `meteo_latest.json` | **Open-Meteo** best_match cloud layers + visibility (fog), 14 days, 0.25° × 0.50° (1551 points) | every 6 h |
+| `meteo_latest.json` | **Open-Meteo** best_match (= ECMWF IFS 9 km) cloud layers + visibility (fog), 14 days, 0.20° × 0.40° (2419 points) | 2×/day after ECMWF 00Z/12Z |
 
 Same JSON schemas as `iceland-sky-data` (cloud grid adds `div`: stored value / div = cloud fraction).
 
