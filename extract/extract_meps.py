@@ -105,8 +105,8 @@ def list_runs():
         if not answered:
             raise SourceUnreachable(str(e)[:200])
         raise
-    if not runs and not answered:                    # probes all 5xx and the catalog lists nothing
-        raise SourceUnreachable('run probes returned server errors; catalog empty')
+    if not runs:          # no run at all in 18 h (probes 5xx/404, catalog empty/404: 26 Oct 2026)
+        raise SourceUnreachable('no MEPS run listed (catalog %s)' % ('empty' if answered else 'unavailable'))
     return runs
 
 
