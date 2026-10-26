@@ -61,7 +61,12 @@ def _retry(fn, what, tries=4, wait=15):
 
 
 class SourceUnreachable(Exception):
-    """thredds.met.no did not answer at all (transient outage): skip this cycle, don't fail."""
+    """thredds.met.no did not answer, or answered only with server errors (HTTP 5xx, e.g.
+    'Storage ... is not active' / 'Cannot clear an unstored lazy reference', 25-26 Oct 2026):
+    transient outage, skip this cycle, don't fail."""
+
+
+STALE_HOURS = 12         # published run older than this => a source outage fails loudly again
 
 
 def list_runs():
@@ -76,6 +81,12 @@ def list_runs():
         for attempt in range(2):
             try:
                 r = requests.get(DODS % run + '.dds', timeout=(10, 30), headers=UA)
+                if r.status_code >= 500:             # server error is not an answer about the run
+                    print('  probe %s: HTTP %d %s' % (run, r.status_code, r.text[:100].replace('\n', ' ')))
+                    if attempt == 0:
+                        time.sleep(5)
+                        continue
+                    break
                 answered = True
                 if r.status_code == 200:
                     found.append(run)
@@ -89,11 +100,14 @@ def list_runs():
         return sorted(found)
     try:
         txt = _retry(lambda: requests.get(CATALOG, timeout=60, headers=UA).text, 'catalog', tries=2)
-        return sorted(set(re.findall(r'meps_det_2_5km_(\d{8}T\d{2})Z\.ncml', txt)))
+        runs = sorted(set(re.findall(r'meps_det_2_5km_(\d{8}T\d{2})Z\.ncml', txt)))
     except Exception as e:
         if not answered:
             raise SourceUnreachable(str(e)[:200])
         raise
+    if not runs and not answered:                    # probes all 5xx and the catalog lists nothing
+        raise SourceUnreachable('run probes returned server errors; catalog empty')
+    return runs
 
 
 def open_run(run):
@@ -202,6 +216,22 @@ def build(run, box, dlat, dlon):
     return res
 
 
+def outage(published, why):
+    """Source outage: exit 4 (workflow keeps the published run, warns, Worker re-dispatches),
+    unless the published run is already older than STALE_HOURS - then fail so it gets noticed."""
+    print(why)
+    try:
+        age = (dt.datetime.now(dt.timezone.utc) -
+               dt.datetime.strptime(published, '%y%m%d_%H%M').replace(tzinfo=dt.timezone.utc))
+    except (TypeError, ValueError):
+        age = None
+    if age is None or age > dt.timedelta(hours=STALE_HOURS):
+        raise SystemExit('source outage and published run %s is %s old (limit %d h)' % (
+            published, 'unknown' if age is None else str(age).split('.')[0], STALE_HOURS))
+    print('keeping the published run %s (%s old)' % (published, str(age).split('.')[0]))
+    return 4
+
+
 def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument('--run', help='YYYYMMDDTHH (default newest complete)')
@@ -215,20 +245,26 @@ def main(argv):
     try:
         cands = [a.run] if a.run else list(reversed(list_runs()))[:3]
     except SourceUnreachable as e:
-        print('thredds.met.no unreachable (%s); keeping the published run' % e)
-        return 4
-    res = None
+        return outage(a.skip_if_run, 'thredds.met.no unreachable (%s)' % e)
+    res, dap_errors = None, []
     for run in cands:
         rid = dt.datetime.strptime(run, '%Y%m%dT%H').strftime('%y%m%d_%H%M')
         if a.skip_if_run and rid == a.skip_if_run:
             print('run %s already published; nothing to do' % rid)
             return 3
         print('run=%s box=%s' % (run, box))
-        res = build(run, box, a.dlat, a.dlon)
+        try:
+            res = build(run, box, a.dlat, a.dlon)
+        except (OSError, RuntimeError) as e:         # netCDF4 DAP server error after retries
+            dap_errors.append('%s: %s' % (run, str(e)[:120]))
+            print('  run %s unreadable (%s), trying previous' % (run, str(e)[:120]))
+            continue
         if res:
             break
         print('  run %s still incomplete, trying previous' % run)
     if not res:
+        if dap_errors and not a.run:
+            return outage(a.skip_if_run, 'thredds.met.no server errors: ' + '; '.join(dap_errors))
         raise SystemExit('no complete MEPS run found')
     with open(a.out, 'w', encoding='utf-8') as f:
         json.dump(res, f, separators=(',', ':'))
